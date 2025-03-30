@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+  
+  /* Typography Styles */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif font-semibold tracking-tight;
+  }
+  
+  /* Dark Mode Improvements */
+  :root[class~="dark"] {
+    --primary-foreground: rgb(250, 250, 253);
+    --foreground: rgb(236, 237, 238);
+    --text-contrast: rgb(230, 230, 230);
+    --card-foreground: rgb(236, 237, 238);
+  }
+  
+  /* High contrast text in dark mode */
+  [data-theme="dark"] .text-gray-500,
+  [data-theme="dark"] .text-gray-600,
+  [data-theme="dark"] .text-neutral-500,
+  [data-theme="dark"] .text-neutral-600 {
+    @apply text-gray-300;
+  }
+  
+  [data-theme="dark"] .text-gray-700,
+  [data-theme="dark"] .text-gray-800,
+  [data-theme="dark"] .text-neutral-700,
+  [data-theme="dark"] .text-neutral-800 {
+    @apply text-white;
+  }
+  
+  /* Improved card styles for dark mode */
+  [data-theme="dark"] .bg-white,
+  [data-theme="dark"] .bg-card,
+  [data-theme="dark"] .bg-neutral-50,
+  [data-theme="dark"] .bg-neutral-100 {
+    @apply bg-gray-900;
+  }
+  
+  /* Icon animations */
+  .material-icons {
+    @apply transition-all duration-300 ease-in-out;
+  }
+  
+  /* Legal term tooltips */
+  .legal-term {
+    @apply relative cursor-help border-b-2 border-dotted border-primary text-primary;
+  }
+  
+  /* Category cards */
+  .category-card:hover .material-icons {
+    @apply transform scale-110 text-primary;
+  }
+  
+  /* Dark mode for category cards */
+  [data-theme="dark"] .category-card {
+    @apply from-gray-800 to-gray-900 border-gray-700;
+  }
+  
+  [data-theme="dark"] .category-card h3 {
+    @apply text-white;
+  }
+  
+  /* This is for the hover effect */
+  .transform.hover\:scale-102:hover {
+    transform: scale(1.02);
+  }
+  
+  /* Mobile Nav Animation */
+  .MobileNav button:active {
+    @apply transform scale-95;
+  }
+
+  /* Dark mode mobile nav */
+  [data-theme="dark"] .MobileNav {
+    @apply bg-gray-900 border-gray-700;
+  }
+
+  /* Smooth transitions for tabs */
+  .animate-in {
+    animation: fadeIn 0.3s ease-in-out;
+  }
+  
+  /* Card & Button styles */
+  .card-highlight {
+    @apply bg-gradient-to-br from-primary/5 to-primary/10 shadow hover:shadow-md transition-all;
+  }
+  
+  .btn-primary-gradient {
+    @apply bg-gradient-to-r from-primary to-primary-dark text-white;
+  }
+  
+  /* Animation Definitions */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(5px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  @keyframes slideInRight {
+    from {
+      opacity: 0;
+      transform: translateX(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  
+  .animate-slide-in {
+    animation: slideInRight 0.4s ease-out;
+  }
+}

@@ -1,0 +1,1570 @@
+import { useState, useEffect } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLanguagePreference } from "@/lib/hooks";
+import { DEFAULT_USER_ID } from "@/lib/constants";
+import { Case, CaseHearing } from "@shared/schema";
+import axios from "axios";
+import { useToast } from "@/hooks/use-toast";
+
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { format, isPast, isToday } from "date-fns";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import * as z from "zod";
+
+// Form Schema for Case
+const caseFormSchema = z.object({
+  title: z.string().min(2, { message: "Title must be at least 2 characters" }),
+  titleHindi: z.string().optional(),
+  caseNumber: z.string().optional(),
+  court: z.string().optional(),
+  clientName: z.string().optional(),
+  clientPhone: z.string().optional(),
+  clientEmail: z.string().email().optional().or(z.literal("")),
+  description: z.string().optional(),
+  descriptionHindi: z.string().optional(),
+  status: z.string().optional(),
+  nextHearingDate: z.string().optional(),
+  nextHearingTime: z.string().optional(),
+  notes: z.string().optional(),
+  reminderSet: z.boolean().optional(),
+  reminderDate: z.string().optional(),
+  reminderTime: z.string().optional(),
+  reminderNote: z.string().optional(),
+});
+
+// Form Schema for Hearing
+const hearingFormSchema = z.object({
+  date: z.string().min(1, { message: "Date is required" }),
+  notes: z.string().optional(),
+  outcome: z.string().optional(),
+  nextSteps: z.string().optional(),
+  attendees: z.string().optional(),
+  evidencePresented: z.string().optional(),
+  judgmentSummary: z.string().optional(),
+});
+
+// Component for the Advocates Workbook feature
+interface CaseWorkbookProps {
+  onTabChange?: (tabId: string) => void;
+}
+
+export default function CaseWorkbook({ onTabChange = () => {} }: CaseWorkbookProps) {
+  const { toast } = useToast();
+  const { language } = useLanguagePreference();
+  const [activeTab, setActiveTab] = useState("active");
+  const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+  const [isAddCaseOpen, setIsAddCaseOpen] = useState(false);
+  const [isEditCaseOpen, setIsEditCaseOpen] = useState(false);
+  const [isAddHearingOpen, setIsAddHearingOpen] = useState(false);
+  const [selectedHearingId, setSelectedHearingId] = useState<number | null>(null);
+  const [isViewHearingOpen, setIsViewHearingOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  // Fetch all cases
+  const { data: cases, isLoading, error } = useQuery<Case[]>({
+    queryKey: [`/api/cases/${DEFAULT_USER_ID}`],
+    refetchOnWindowFocus: false,
+  });
+
+  // Fetch case details
+  const { data: selectedCase, isLoading: isLoadingCase } = useQuery<Case>({
+    queryKey: [`/api/cases/detail/${selectedCaseId}`],
+    enabled: !!selectedCaseId,
+  });
+
+  // Fetch hearings for selected case
+  const { data: hearings, isLoading: isLoadingHearings } = useQuery<CaseHearing[]>({
+    queryKey: [`/api/cases/${selectedCaseId}/hearings`],
+    enabled: !!selectedCaseId,
+  });
+
+  // Fetch selected hearing
+  const { data: selectedHearing, isLoading: isLoadingHearing } = useQuery<CaseHearing>({
+    queryKey: [`/api/hearings/${selectedHearingId}`],
+    enabled: !!selectedHearingId,
+  });
+
+  // Form for adding a new case
+  const addCaseForm = useForm<z.infer<typeof caseFormSchema>>({
+    resolver: zodResolver(caseFormSchema),
+    defaultValues: {
+      title: "",
+      titleHindi: "",
+      caseNumber: "",
+      court: "",
+      clientName: "",
+      clientPhone: "",
+      clientEmail: "",
+      description: "",
+      descriptionHindi: "",
+      status: "active",
+      nextHearingDate: "",
+      notes: "",
+      reminderSet: false,
+      reminderDate: "",
+      reminderNote: "",
+    },
+  });
+
+  // Form for editing an existing case
+  const editCaseForm = useForm<z.infer<typeof caseFormSchema>>({
+    resolver: zodResolver(caseFormSchema),
+    defaultValues: {
+      title: "",
+      titleHindi: "",
+      caseNumber: "",
+      court: "",
+      clientName: "",
+      clientPhone: "",
+      clientEmail: "",
+      description: "",
+      descriptionHindi: "",
+      status: "active",
+      nextHearingDate: "",
+      notes: "",
+      reminderSet: false,
+      reminderDate: "",
+      reminderNote: "",
+    },
+  });
+
+  // Form for adding a new hearing
+  const addHearingForm = useForm<z.infer<typeof hearingFormSchema>>({
+    resolver: zodResolver(hearingFormSchema),
+    defaultValues: {
+      date: "",
+      notes: "",
+      outcome: "",
+      nextSteps: "",
+      attendees: "",
+      evidencePresented: "",
+      judgmentSummary: "",
+    },
+  });
+
+  // Mutation for creating a new case
+  const createCaseMutation = useMutation({
+    mutationFn: (data: z.infer<typeof caseFormSchema>) => {
+      return axios.post('/api/cases', {
+        ...data,
+        userId: DEFAULT_USER_ID,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/cases/${DEFAULT_USER_ID}`] });
+      setIsAddCaseOpen(false);
+      addCaseForm.reset();
+    },
+  });
+
+  // Mutation for updating a case
+  const updateCaseMutation = useMutation({
+    mutationFn: (data: { id: number; caseData: z.infer<typeof caseFormSchema> }) => {
+      return axios.patch(`/api/cases/${data.id}`, data.caseData);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/cases/${DEFAULT_USER_ID}`] });
+      if (selectedCaseId) {
+        queryClient.invalidateQueries({ queryKey: [`/api/cases/detail/${selectedCaseId}`] });
+      }
+      setIsEditCaseOpen(false);
+      editCaseForm.reset();
+    },
+  });
+
+  // Mutation for deleting a case
+  const deleteCaseMutation = useMutation({
+    mutationFn: (id: number) => {
+      return axios.delete(`/api/cases/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/cases/${DEFAULT_USER_ID}`] });
+      setSelectedCaseId(null);
+    },
+  });
+
+  // Mutation for creating a new hearing
+  const createHearingMutation = useMutation({
+    mutationFn: (data: z.infer<typeof hearingFormSchema>) => {
+      return axios.post('/api/hearings', {
+        ...data,
+        caseId: selectedCaseId,
+      });
+    },
+    onSuccess: () => {
+      if (selectedCaseId) {
+        queryClient.invalidateQueries({ queryKey: [`/api/cases/${selectedCaseId}/hearings`] });
+        queryClient.invalidateQueries({ queryKey: [`/api/cases/detail/${selectedCaseId}`] });
+      }
+      setIsAddHearingOpen(false);
+      addHearingForm.reset();
+    },
+  });
+
+  // Update edit form when selected case changes
+  useEffect(() => {
+    if (selectedCase) {
+      editCaseForm.reset({
+        title: selectedCase.title || "",
+        titleHindi: selectedCase.titleHindi || "",
+        caseNumber: selectedCase.caseNumber || "",
+        court: selectedCase.court || "",
+        clientName: selectedCase.clientName || "",
+        clientPhone: selectedCase.clientPhone || "",
+        clientEmail: selectedCase.clientEmail || "",
+        description: selectedCase.description || "",
+        descriptionHindi: selectedCase.descriptionHindi || "",
+        status: selectedCase.status || "active",
+        nextHearingDate: selectedCase.nextHearingDate 
+          ? format(new Date(selectedCase.nextHearingDate), "yyyy-MM-dd") 
+          : "",
+        notes: selectedCase.notes || "",
+        reminderSet: selectedCase.reminderSet || false,
+        reminderDate: selectedCase.reminderDate 
+          ? format(new Date(selectedCase.reminderDate), "yyyy-MM-dd") 
+          : "",
+        reminderNote: selectedCase.reminderNote || "",
+      });
+    }
+  }, [selectedCase, editCaseForm]);
+
+  // Handle case form submission
+  const onAddCaseSubmit = (data: z.infer<typeof caseFormSchema>) => {
+    createCaseMutation.mutate(data);
+  };
+
+  // Handle edit case form submission
+  const onEditCaseSubmit = (data: z.infer<typeof caseFormSchema>) => {
+    if (selectedCaseId) {
+      updateCaseMutation.mutate({ id: selectedCaseId, caseData: data });
+    }
+  };
+
+  // Handle hearing form submission
+  const onAddHearingSubmit = (data: z.infer<typeof hearingFormSchema>) => {
+    createHearingMutation.mutate(data);
+  };
+
+  // Handle case deletion
+  const handleDeleteCase = () => {
+    if (selectedCaseId && confirm(language === "en" ? "Are you sure you want to delete this case?" : "क्या आप वाकई इस केस को हटाना चाहते हैं?")) {
+      deleteCaseMutation.mutate(selectedCaseId);
+    }
+  };
+
+  // Filter cases based on active tab
+  const filteredCases = cases?.filter(c => {
+    if (activeTab === "active") return c.status === "active" || c.status === "pending";
+    if (activeTab === "closed") return c.status === "closed" || c.status === "dismissed";
+    return true; // Show all cases in "all" tab
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="text-center">
+          <div className="animate-spin h-8 w-8 border-t-2 border-primary rounded-full mx-auto mb-4"></div>
+          <p>{language === "en" ? "Loading cases..." : "केस लोड हो रहे हैं..."}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-8">
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
+          <p>{language === "en" ? "Error loading cases" : "केस लोड करने में त्रुटि"}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const handleCardClick = (caseId: number) => {
+    if (selectedCaseId === caseId) {
+      setSelectedCaseId(null); // Deselect if already selected
+    } else {
+      setSelectedCaseId(caseId); // Select the case
+    }
+  };
+
+  // Format date for display
+  const formatLocalDate = (dateString: string | Date) => {
+    try {
+      const date = new Date(dateString);
+      return format(date, "dd MMM yyyy");
+    } catch (e) {
+      return "Invalid date";
+    }
+  };
+
+  // Status badge component
+  const StatusBadge = ({ status }: { status: string }) => {
+    let bgColor = "bg-gray-100 text-gray-800";
+    
+    if (status === "active") {
+      bgColor = "bg-green-100 text-green-800";
+    } else if (status === "pending") {
+      bgColor = "bg-yellow-100 text-yellow-800";
+    } else if (status === "closed") {
+      bgColor = "bg-blue-100 text-blue-800";
+    } else if (status === "dismissed") {
+      bgColor = "bg-red-100 text-red-800";
+    }
+    
+    return (
+      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${bgColor}`}>
+        {status}
+      </span>
+    );
+  };
+
+  // Upcoming hearing indicator
+  const UpcomingHearingIndicator = ({ date, time }: { date: string | Date | null, time?: string }) => {
+    if (!date) return null;
+    
+    try {
+      const hearingDate = new Date(date);
+      const isUpcoming = !isPast(hearingDate) || isToday(hearingDate);
+      
+      if (isUpcoming) {
+        return (
+          <div className="flex items-center mt-2 text-xs text-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <span>
+              {language === "en" ? "Upcoming: " : "आगामी: "} 
+              {formatLocalDate(date)}
+              {time && ` ${time}`}
+            </span>
+            {time && (
+              <span className="ml-1 bg-primary/10 text-primary px-1 rounded text-[10px]">
+                {language === "en" ? "at" : "समय"} {time}
+              </span>
+            )}
+          </div>
+        );
+      }
+    } catch (e) {}
+    
+    return null;
+  };
+
+  // View a hearing
+  const handleViewHearing = (hearingId: number) => {
+    setSelectedHearingId(hearingId);
+    setIsViewHearingOpen(true);
+  };
+
+  return (
+    <div className="p-4">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold">
+          {language === "en" ? "Advocates Workbook" : "अधिवक्ता कार्यपुस्तिका"}
+        </h2>
+        <Button 
+          variant="outline" 
+          onClick={() => onTabChange("home")}
+          className="flex items-center"
+        >
+          <span className="material-icons mr-1">arrow_back</span>
+          {language === "en" ? "Back to Home" : "होम पर वापस जाएं"}
+        </Button>
+      </div>
+      
+      <Tabs defaultValue="active" value={activeTab} onValueChange={setActiveTab} className="mb-6">
+        <div className="flex justify-between items-center mb-4">
+          <TabsList>
+            <TabsTrigger value="active">
+              {language === "en" ? "Active Cases" : "सक्रिय केस"}
+            </TabsTrigger>
+            <TabsTrigger value="closed">
+              {language === "en" ? "Closed Cases" : "बंद केस"}
+            </TabsTrigger>
+            <TabsTrigger value="all">
+              {language === "en" ? "All Cases" : "सभी केस"}
+            </TabsTrigger>
+          </TabsList>
+          
+          <Dialog open={isAddCaseOpen} onOpenChange={setIsAddCaseOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                {language === "en" ? "Add New Case" : "नया केस जोड़ें"}
+              </Button>
+            </DialogTrigger>
+            
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>
+                  {language === "en" ? "Add New Case" : "नया केस जोड़ें"}
+                </DialogTitle>
+                <DialogDescription>
+                  {language === "en" 
+                    ? "Enter the details of the new case" 
+                    : "नए केस का विवरण दर्ज करें"}
+                </DialogDescription>
+              </DialogHeader>
+              
+              <Form {...addCaseForm}>
+                <form onSubmit={addCaseForm.handleSubmit(onAddCaseSubmit)} className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <FormField
+                      control={addCaseForm.control}
+                      name="title"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Case Title" : "केस का शीर्षक"}*
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder={language === "en" ? "Enter case title" : "केस का शीर्षक दर्ज करें"} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addCaseForm.control}
+                      name="titleHindi"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Case Title (Hindi)" : "केस का शीर्षक (हिंदी में)"}
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder={language === "en" ? "Enter case title in Hindi" : "हिंदी में केस का शीर्षक दर्ज करें"} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addCaseForm.control}
+                      name="caseNumber"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Case Number" : "केस नंबर"}
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder={language === "en" ? "Enter case number" : "केस नंबर दर्ज करें"} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addCaseForm.control}
+                      name="court"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Court" : "न्यायालय"}
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder={language === "en" ? "Enter court name" : "न्यायालय का नाम दर्ज करें"} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addCaseForm.control}
+                      name="clientName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Client Name" : "ग्राहक का नाम"}
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder={language === "en" ? "Enter client name" : "ग्राहक का नाम दर्ज करें"} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={addCaseForm.control}
+                      name="status"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            {language === "en" ? "Status" : "स्थिति"}
+                          </FormLabel>
+                          <Select 
+                            defaultValue={field.value} 
+                            onValueChange={field.onChange}
+                          >
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder={language === "en" ? "Select status" : "स्थिति चुनें"} />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="active">
+                                {language === "en" ? "Active" : "सक्रिय"}
+                              </SelectItem>
+                              <SelectItem value="pending">
+                                {language === "en" ? "Pending" : "लंबित"}
+                              </SelectItem>
+                              <SelectItem value="closed">
+                                {language === "en" ? "Closed" : "बंद"}
+                              </SelectItem>
+                              <SelectItem value="dismissed">
+                                {language === "en" ? "Dismissed" : "खारिज"}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <div className="col-span-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField
+                          control={addCaseForm.control}
+                          name="nextHearingDate"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Next Hearing Date" : "अगली सुनवाई की तारीख"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input type="date" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={addCaseForm.control}
+                          name="nextHearingTime"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Hearing Time" : "सुनवाई का समय"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input type="time" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <FormField
+                    control={addCaseForm.control}
+                    name="description"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {language === "en" ? "Case Description" : "केस का विवरण"}
+                        </FormLabel>
+                        <FormControl>
+                          <Textarea 
+                            placeholder={language === "en" ? "Enter case details" : "केस का विवरण दर्ज करें"} 
+                            className="min-h-[100px]"
+                            {...field} 
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  
+                  <FormField
+                    control={addCaseForm.control}
+                    name="reminderSet"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">
+                            {language === "en" ? "Set Reminder" : "रिमाइंडर सेट करें"}
+                          </FormLabel>
+                          <FormDescription>
+                            {language === "en" 
+                              ? "Get notified about important dates for this case" 
+                              : "इस केस की महत्वपूर्ण तारीखों के बारे में सूचित रहें"}
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                  
+                  {addCaseForm.watch("reminderSet") && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField
+                          control={addCaseForm.control}
+                          name="reminderDate"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Reminder Date" : "रिमाइंडर की तारीख"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input type="date" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={addCaseForm.control}
+                          name="reminderTime"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Reminder Time" : "रिमाइंडर का समय"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input type="time" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                      
+                      <FormField
+                        control={addCaseForm.control}
+                        name="reminderNote"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>
+                              {language === "en" ? "Reminder Note" : "रिमाइंडर नोट"}
+                            </FormLabel>
+                            <FormControl>
+                              <Input 
+                                placeholder={language === "en" ? "Note for the reminder" : "रिमाइंडर के लिए नोट"} 
+                                {...field} 
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </div>
+                  )}
+                  
+                  <DialogFooter>
+                    <Button type="submit" disabled={createCaseMutation.isPending}>
+                      {createCaseMutation.isPending ? (
+                        <span className="flex items-center">
+                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          {language === "en" ? "Saving..." : "सहेज रहा है..."}
+                        </span>
+                      ) : (
+                        <span>{language === "en" ? "Save Case" : "केस सहेजें"}</span>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </Form>
+            </DialogContent>
+          </Dialog>
+        </div>
+        
+        <TabsContent value="active" className="mt-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredCases?.length ? (
+              filteredCases.map((caseItem) => (
+                <Card 
+                  key={caseItem.id} 
+                  className={`cursor-pointer hover:shadow-md transition-shadow ${selectedCaseId === caseItem.id ? 'ring-2 ring-primary' : ''}`}
+                  onClick={() => handleCardClick(caseItem.id)}
+                >
+                  <CardHeader className="pb-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <CardTitle className="text-lg">
+                          {language === "en" ? caseItem.title : caseItem.titleHindi || caseItem.title}
+                        </CardTitle>
+                        {caseItem.caseNumber && (
+                          <CardDescription>
+                            {language === "en" ? "Case No: " : "केस नंबर: "}
+                            {caseItem.caseNumber}
+                          </CardDescription>
+                        )}
+                      </div>
+                      <StatusBadge status={caseItem.status} />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pb-2">
+                    {caseItem.clientName && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Client: " : "ग्राहक: "}</span>
+                        {caseItem.clientName}
+                      </div>
+                    )}
+                    {caseItem.court && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Court: " : "न्यायालय: "}</span>
+                        {caseItem.court}
+                      </div>
+                    )}
+                    <UpcomingHearingIndicator date={caseItem.nextHearingDate} />
+                  </CardContent>
+                  <CardFooter className="pt-0 text-xs text-gray-500">
+                    {formatLocalDate(caseItem.createdAt)}
+                  </CardFooter>
+                </Card>
+              ))
+            ) : (
+              <div className="col-span-full text-center p-8 bg-gray-50 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mx-auto text-gray-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                </svg>
+                <p className="text-gray-600">
+                  {language === "en" 
+                    ? "No cases found. Click 'Add New Case' to create one." 
+                    : "कोई केस नहीं मिला। एक बनाने के लिए 'नया केस जोड़ें' पर क्लिक करें।"}
+                </p>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+        
+        <TabsContent value="closed" className="mt-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredCases?.length ? (
+              filteredCases.map((caseItem) => (
+                <Card 
+                  key={caseItem.id} 
+                  className={`cursor-pointer hover:shadow-md transition-shadow ${selectedCaseId === caseItem.id ? 'ring-2 ring-primary' : ''}`}
+                  onClick={() => handleCardClick(caseItem.id)}
+                >
+                  <CardHeader className="pb-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <CardTitle className="text-lg">
+                          {language === "en" ? caseItem.title : caseItem.titleHindi || caseItem.title}
+                        </CardTitle>
+                        {caseItem.caseNumber && (
+                          <CardDescription>
+                            {language === "en" ? "Case No: " : "केस नंबर: "}
+                            {caseItem.caseNumber}
+                          </CardDescription>
+                        )}
+                      </div>
+                      <StatusBadge status={caseItem.status} />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pb-2">
+                    {caseItem.clientName && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Client: " : "ग्राहक: "}</span>
+                        {caseItem.clientName}
+                      </div>
+                    )}
+                    {caseItem.court && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Court: " : "न्यायालय: "}</span>
+                        {caseItem.court}
+                      </div>
+                    )}
+                  </CardContent>
+                  <CardFooter className="pt-0 text-xs text-gray-500">
+                    {formatLocalDate(caseItem.createdAt)}
+                  </CardFooter>
+                </Card>
+              ))
+            ) : (
+              <div className="col-span-full text-center p-8 bg-gray-50 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mx-auto text-gray-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-gray-600">
+                  {language === "en" 
+                    ? "No closed cases yet." 
+                    : "अभी तक कोई बंद केस नहीं है।"}
+                </p>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+        
+        <TabsContent value="all" className="mt-0">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredCases?.length ? (
+              filteredCases.map((caseItem) => (
+                <Card 
+                  key={caseItem.id} 
+                  className={`cursor-pointer hover:shadow-md transition-shadow ${selectedCaseId === caseItem.id ? 'ring-2 ring-primary' : ''}`}
+                  onClick={() => handleCardClick(caseItem.id)}
+                >
+                  <CardHeader className="pb-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <CardTitle className="text-lg">
+                          {language === "en" ? caseItem.title : caseItem.titleHindi || caseItem.title}
+                        </CardTitle>
+                        {caseItem.caseNumber && (
+                          <CardDescription>
+                            {language === "en" ? "Case No: " : "केस नंबर: "}
+                            {caseItem.caseNumber}
+                          </CardDescription>
+                        )}
+                      </div>
+                      <StatusBadge status={caseItem.status} />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pb-2">
+                    {caseItem.clientName && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Client: " : "ग्राहक: "}</span>
+                        {caseItem.clientName}
+                      </div>
+                    )}
+                    {caseItem.court && (
+                      <div className="text-sm mb-2">
+                        <span className="font-medium">{language === "en" ? "Court: " : "न्यायालय: "}</span>
+                        {caseItem.court}
+                      </div>
+                    )}
+                    <UpcomingHearingIndicator date={caseItem.nextHearingDate} />
+                  </CardContent>
+                  <CardFooter className="pt-0 text-xs text-gray-500">
+                    {formatLocalDate(caseItem.createdAt)}
+                  </CardFooter>
+                </Card>
+              ))
+            ) : (
+              <div className="col-span-full text-center p-8 bg-gray-50 rounded-lg">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mx-auto text-gray-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                </svg>
+                <p className="text-gray-600">
+                  {language === "en" 
+                    ? "No cases found. Click 'Add New Case' to create one." 
+                    : "कोई केस नहीं मिला। एक बनाने के लिए 'नया केस जोड़ें' पर क्लिक करें।"}
+                </p>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+      
+      {/* Case Details Panel */}
+      {selectedCaseId && selectedCase && (
+        <div className="mt-8">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-xl font-semibold">
+              {language === "en" ? "Case Details" : "केस का विवरण"}
+            </h3>
+            <div className="flex space-x-2">
+              <Dialog open={isEditCaseOpen} onOpenChange={setIsEditCaseOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    {language === "en" ? "Edit" : "संपादित करें"}
+                  </Button>
+                </DialogTrigger>
+                
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>
+                      {language === "en" ? "Edit Case" : "केस संपादित करें"}
+                    </DialogTitle>
+                    <DialogDescription>
+                      {language === "en" 
+                        ? "Update case details" 
+                        : "केस का विवरण अपडेट करें"}
+                    </DialogDescription>
+                  </DialogHeader>
+                  
+                  <Form {...editCaseForm}>
+                    <form onSubmit={editCaseForm.handleSubmit(onEditCaseSubmit)} className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <FormField
+                          control={editCaseForm.control}
+                          name="title"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Case Title" : "केस का शीर्षक"}*
+                              </FormLabel>
+                              <FormControl>
+                                <Input {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="titleHindi"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Case Title (Hindi)" : "केस का शीर्षक (हिंदी में)"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="caseNumber"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Case Number" : "केस नंबर"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="court"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Court" : "न्यायालय"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="clientName"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Client Name" : "ग्राहक का नाम"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="status"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Status" : "स्थिति"}
+                              </FormLabel>
+                              <Select 
+                                value={field.value} 
+                                onValueChange={field.onChange}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="active">
+                                    {language === "en" ? "Active" : "सक्रिय"}
+                                  </SelectItem>
+                                  <SelectItem value="pending">
+                                    {language === "en" ? "Pending" : "लंबित"}
+                                  </SelectItem>
+                                  <SelectItem value="closed">
+                                    {language === "en" ? "Closed" : "बंद"}
+                                  </SelectItem>
+                                  <SelectItem value="dismissed">
+                                    {language === "en" ? "Dismissed" : "खारिज"}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        
+                        <FormField
+                          control={editCaseForm.control}
+                          name="nextHearingDate"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>
+                                {language === "en" ? "Next Hearing Date" : "अगली सुनवाई की तारीख"}
+                              </FormLabel>
+                              <FormControl>
+                                <Input type="date" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                      
+                      <FormField
+                        control={editCaseForm.control}
+                        name="description"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>
+                              {language === "en" ? "Case Description" : "केस का विवरण"}
+                            </FormLabel>
+                            <FormControl>
+                              <Textarea 
+                                className="min-h-[100px]"
+                                {...field} 
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      
+                      <FormField
+                        control={editCaseForm.control}
+                        name="reminderSet"
+                        render={({ field }) => (
+                          <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                            <div className="space-y-0.5">
+                              <FormLabel className="text-base">
+                                {language === "en" ? "Set Reminder" : "रिमाइंडर सेट करें"}
+                              </FormLabel>
+                              <FormDescription>
+                                {language === "en" 
+                                  ? "Get notified about important dates for this case" 
+                                  : "इस केस की महत्वपूर्ण तारीखों के बारे में सूचित रहें"}
+                              </FormDescription>
+                            </div>
+                            <FormControl>
+                              <Switch
+                                checked={field.value}
+                                onCheckedChange={field.onChange}
+                              />
+                            </FormControl>
+                          </FormItem>
+                        )}
+                      />
+                      
+                      {editCaseForm.watch("reminderSet") && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <FormField
+                            control={editCaseForm.control}
+                            name="reminderDate"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>
+                                  {language === "en" ? "Reminder Date" : "रिमाइंडर की तारीख"}
+                                </FormLabel>
+                                <FormControl>
+                                  <Input type="date" {...field} />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          
+                          <FormField
+                            control={editCaseForm.control}
+                            name="reminderNote"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>
+                                  {language === "en" ? "Reminder Note" : "रिमाइंडर नोट"}
+                                </FormLabel>
+                                <FormControl>
+                                  <Input {...field} />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+                      )}
+                      
+                      <DialogFooter>
+                        <Button type="submit" disabled={updateCaseMutation.isPending}>
+                          {updateCaseMutation.isPending ? (
+                            <span className="flex items-center">
+                              <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              {language === "en" ? "Updating..." : "अपडेट हो रहा है..."}
+                            </span>
+                          ) : (
+                            <span>{language === "en" ? "Update Case" : "केस अपडेट करें"}</span>
+                          )}
+                        </Button>
+                      </DialogFooter>
+                    </form>
+                  </Form>
+                </DialogContent>
+              </Dialog>
+              
+              <Button variant="outline" onClick={handleDeleteCase} disabled={deleteCaseMutation.isPending}>
+                {deleteCaseMutation.isPending ? (
+                  <span className="flex items-center">
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    {language === "en" ? "Deleting..." : "हटा रहा है..."}
+                  </span>
+                ) : (
+                  <>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    {language === "en" ? "Delete" : "हटाएं"}
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="md:col-span-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>
+                    {language === "en" ? selectedCase.title : selectedCase.titleHindi || selectedCase.title}
+                  </CardTitle>
+                  <div className="flex items-center space-x-2">
+                    <StatusBadge status={selectedCase.status} />
+                    {selectedCase.caseNumber && (
+                      <CardDescription>
+                        {language === "en" ? "Case No: " : "केस नंबर: "}
+                        {selectedCase.caseNumber}
+                      </CardDescription>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {selectedCase.clientName && (
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-500">
+                          {language === "en" ? "Client" : "ग्राहक"}
+                        </h4>
+                        <p>{selectedCase.clientName}</p>
+                      </div>
+                    )}
+                    
+                    {selectedCase.court && (
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-500">
+                          {language === "en" ? "Court" : "न्यायालय"}
+                        </h4>
+                        <p>{selectedCase.court}</p>
+                      </div>
+                    )}
+                    
+                    {selectedCase.nextHearingDate && (
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-500">
+                          {language === "en" ? "Next Hearing" : "अगली सुनवाई"}
+                        </h4>
+                        <p>{formatLocalDate(selectedCase.nextHearingDate)}</p>
+                      </div>
+                    )}
+                    
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-500">
+                        {language === "en" ? "Created On" : "निर्माण तिथि"}
+                      </h4>
+                      <p>{formatLocalDate(selectedCase.createdAt)}</p>
+                    </div>
+                  </div>
+                  
+                  {selectedCase.description && (
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-500 mb-2">
+                        {language === "en" ? "Description" : "विवरण"}
+                      </h4>
+                      <p className="text-gray-700 whitespace-pre-line">
+                        {language === "en" ? selectedCase.description : selectedCase.descriptionHindi || selectedCase.description}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {selectedCase.reminderSet && selectedCase.reminderDate && (
+                    <div className="flex items-start p-4 bg-amber-50 rounded-lg border border-amber-200">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-amber-500 mr-2 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <h4 className="font-medium text-amber-800">
+                          {language === "en" ? "Reminder" : "रिमाइंडर"}: {formatLocalDate(selectedCase.reminderDate)}
+                        </h4>
+                        {selectedCase.reminderNote && (
+                          <p className="text-amber-700 text-sm mt-1">{selectedCase.reminderNote}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            
+            <div>
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex justify-between items-center">
+                    <CardTitle className="text-lg">
+                      {language === "en" ? "Hearings" : "सुनवाई"}
+                    </CardTitle>
+                    
+                    <Dialog open={isAddHearingOpen} onOpenChange={setIsAddHearingOpen}>
+                      <DialogTrigger asChild>
+                        <Button size="sm">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          {language === "en" ? "Add" : "जोड़ें"}
+                        </Button>
+                      </DialogTrigger>
+                      
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>
+                            {language === "en" ? "Add New Hearing" : "नई सुनवाई जोड़ें"}
+                          </DialogTitle>
+                          <DialogDescription>
+                            {language === "en" 
+                              ? "Record details about a court hearing" 
+                              : "अदालती सुनवाई के बारे में विवरण दर्ज करें"}
+                          </DialogDescription>
+                        </DialogHeader>
+                        
+                        <Form {...addHearingForm}>
+                          <form onSubmit={addHearingForm.handleSubmit(onAddHearingSubmit)} className="space-y-4">
+                            <FormField
+                              control={addHearingForm.control}
+                              name="date"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {language === "en" ? "Hearing Date" : "सुनवाई की तारीख"}*
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input type="date" {...field} />
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            
+                            <FormField
+                              control={addHearingForm.control}
+                              name="notes"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {language === "en" ? "Notes" : "नोट्स"}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Textarea 
+                                      placeholder={language === "en" ? "Enter hearing notes" : "सुनवाई के नोट्स दर्ज करें"} 
+                                      className="min-h-[80px]"
+                                      {...field} 
+                                    />
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            
+                            <FormField
+                              control={addHearingForm.control}
+                              name="outcome"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {language === "en" ? "Outcome" : "परिणाम"}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input 
+                                      placeholder={language === "en" ? "Result of the hearing" : "सुनवाई का परिणाम"} 
+                                      {...field} 
+                                    />
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            
+                            <FormField
+                              control={addHearingForm.control}
+                              name="nextSteps"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>
+                                    {language === "en" ? "Next Steps" : "अगले कदम"}
+                                  </FormLabel>
+                                  <FormControl>
+                                    <Input 
+                                      placeholder={language === "en" ? "Action items to follow" : "आगे के कार्य बिंदु"} 
+                                      {...field} 
+                                    />
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                            
+                            <DialogFooter>
+                              <Button type="submit" disabled={createHearingMutation.isPending}>
+                                {createHearingMutation.isPending ? (
+                                  <span className="flex items-center">
+                                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    {language === "en" ? "Saving..." : "सहेज रहा है..."}
+                                  </span>
+                                ) : (
+                                  <span>{language === "en" ? "Save Hearing" : "सुनवाई सहेजें"}</span>
+                                )}
+                              </Button>
+                            </DialogFooter>
+                          </form>
+                        </Form>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {isLoadingHearings ? (
+                    <div className="text-center py-4">
+                      <div className="animate-spin h-5 w-5 border-t-2 border-primary rounded-full mx-auto"></div>
+                      <p className="text-sm mt-2">{language === "en" ? "Loading..." : "लोड हो रहा है..."}</p>
+                    </div>
+                  ) : hearings && hearings.length > 0 ? (
+                    <div className="space-y-3">
+                      {hearings.map((hearing) => (
+                        <div 
+                          key={hearing.id} 
+                          className="p-3 border rounded-lg hover:bg-gray-50 cursor-pointer transition-colors"
+                          onClick={() => handleViewHearing(hearing.id)}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="font-medium">
+                              {formatLocalDate(hearing.date)}
+                            </div>
+                          </div>
+                          {hearing.outcome && (
+                            <div className="text-sm mt-1 text-gray-700">
+                              <span className="font-medium">{language === "en" ? "Outcome: " : "परिणाम: "}</span>
+                              {hearing.outcome}
+                            </div>
+                          )}
+                          {hearing.notes && (
+                            <div className="text-sm mt-1 text-gray-600 line-clamp-2">
+                              {hearing.notes}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-6 text-gray-500">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 mx-auto text-gray-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                      <p>
+                        {language === "en" 
+                          ? "No hearings recorded yet." 
+                          : "अभी तक कोई सुनवाई दर्ज नहीं की गई है।"}
+                      </p>
+                      <Button 
+                        variant="link" 
+                        size="sm" 
+                        className="mt-1"
+                        onClick={() => setIsAddHearingOpen(true)}
+                      >
+                        {language === "en" ? "Add the first one" : "पहली सुनवाई जोड़ें"}
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* View Hearing Dialog */}
+      <Dialog open={isViewHearingOpen} onOpenChange={setIsViewHearingOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {language === "en" ? "Hearing Details" : "सुनवाई का विवरण"}
+            </DialogTitle>
+          </DialogHeader>
+          
+          {isLoadingHearing ? (
+            <div className="text-center py-8">
+              <div className="animate-spin h-6 w-6 border-t-2 border-primary rounded-full mx-auto mb-4"></div>
+              <p>{language === "en" ? "Loading hearing details..." : "सुनवाई का विवरण लोड हो रहा है..."}</p>
+            </div>
+          ) : selectedHearing ? (
+            <div className="space-y-4">
+              <div>
+                <h4 className="text-sm font-medium text-gray-500 mb-1">
+                  {language === "en" ? "Date" : "तारीख"}
+                </h4>
+                <p className="text-lg font-medium">{formatLocalDate(selectedHearing.date)}</p>
+              </div>
+              
+              {selectedHearing.outcome && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Outcome" : "परिणाम"}
+                  </h4>
+                  <p>{selectedHearing.outcome}</p>
+                </div>
+              )}
+              
+              {selectedHearing.notes && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Notes" : "नोट्स"}
+                  </h4>
+                  <p className="text-gray-700 whitespace-pre-line">{selectedHearing.notes}</p>
+                </div>
+              )}
+              
+              {selectedHearing.nextSteps && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Next Steps" : "अगले कदम"}
+                  </h4>
+                  <p>{selectedHearing.nextSteps}</p>
+                </div>
+              )}
+              
+              {selectedHearing.attendees && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Attendees" : "उपस्थित व्यक्ति"}
+                  </h4>
+                  <p>{selectedHearing.attendees}</p>
+                </div>
+              )}
+              
+              {selectedHearing.evidencePresented && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Evidence Presented" : "प्रस्तुत साक्ष्य"}
+                  </h4>
+                  <p>{selectedHearing.evidencePresented}</p>
+                </div>
+              )}
+              
+              {selectedHearing.judgmentSummary && (
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-1">
+                    {language === "en" ? "Judgment Summary" : "निर्णय का सारांश"}
+                  </h4>
+                  <p>{selectedHearing.judgmentSummary}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-red-500">
+              <p>{language === "en" ? "Hearing not found" : "सुनवाई नहीं मिली"}</p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
